@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { afterEach, mock, test } from "bun:test";
 import { autorun, makeAutoObservable, runInAction } from "mobx";
 
+const copyEvents = [];
+let clipboardError = null;
+
 // Exercise the real UI store and MobX computeds without native permissions,
 // reading user configuration, opening applications, or running startup work.
 mock.module("@sentry/react-native", () => ({ captureException() {} }));
@@ -12,6 +15,12 @@ mock.module("react-native", () => ({
 		addChangeListener: () => ({ remove() {} }),
 	},
 	Linking: { openURL() {} },
+	Clipboard: {
+		setString(value) {
+			if (clipboardError) throw clipboardError;
+			copyEvents.push(["copy", value]);
+		},
+	},
 }));
 mock.module("react-native-restart-newarch", () => ({ default: {} }));
 mock.module("lib/SolNative", () => ({
@@ -19,6 +28,9 @@ mock.module("lib/SolNative", () => ({
 		userName: () => "fixture",
 		exists: () => true,
 		addListener: () => ({ remove() {} }),
+		getApplications: async () => [],
+		showToast: (message) => copyEvents.push(["toast", message]),
+		hideWindow: () => copyEvents.push(["hide"]),
 	},
 }));
 mock.module("lib/shortcuts", () => ({
@@ -31,16 +43,24 @@ mock.module("./persisted-config", () => ({
 	readPersistedUIState: () => new Promise(() => {}),
 	writePersistedUIState() {},
 }));
+mock.module("widgets/settings/general", () => ({
+	isValidCustomSearchEngineUrl: () => true,
+}));
+mock.module("./emoji.store", () => ({ EMOJI_ROW_SIZE: 7 }));
 
 const { createUIStore } = await import("./ui.store");
+const { createKeystrokeStore } = await import("./keystroke.store");
 const cleanups = [];
 afterEach(() => {
 	for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+	copyEvents.length = 0;
+	clipboardError = null;
 });
 
 function fixture(items = []) {
 	const root = { scripts: makeAutoObservable({ scripts: [] }) };
 	const ui = createUIStore(root);
+	root.ui = ui;
 	runInAction(() => {
 		ui.customItems = items;
 	});
@@ -158,4 +178,79 @@ test("empty queries retain usage ordering; calculator and URL actions keep prior
 	assert.equal(ui.temporaryResult.value, "4");
 	ui.setQuery("example.com");
 	assert.equal(ui.searchItems[0].id, "open_url");
+});
+
+test("calculator results update while typing and clear when the expression becomes incomplete", () => {
+	const { ui } = fixture();
+	ui.setQuery("(3.5 * 10 * 3000) - 6%");
+	assert.equal(ui.temporaryResult.value, "98700");
+	assert.equal(ui.searchItems[0].type, "TEMPORARY_RESULT");
+	ui.setQuery("(3.5 * 10 * 3000) -");
+	assert.equal(ui.temporaryResult, null);
+	assert.ok(!ui.searchItems.some(({ type }) => type === "TEMPORARY_RESULT"));
+	ui.setQuery("0,1 + 0,2");
+	assert.equal(ui.temporaryResult.value, "0,3");
+	ui.setQuery("1/0");
+	assert.equal(ui.temporaryResult, null);
+});
+
+test("Enter copies the calculation, clears the input, and reopening starts empty", async () => {
+	const { ui, root } = fixture();
+	const keys = createKeystrokeStore(root);
+	cleanups.push(() => keys.cleanUp());
+	runInAction(() => {
+		ui.isAccessibilityTrusted = true;
+		ui.hasFullDiskAccess = true;
+	});
+	ui.setQuery("(3.5 * 10 * 3000) - 6%");
+	await keys.keyDown({ keyCode: 36, meta: false, shift: false });
+	assert.deepEqual(copyEvents, [
+		["copy", "98700"],
+		["toast", "Copied to clipboard"],
+		["hide"],
+	]);
+	assert.equal(ui.query, "");
+	assert.equal(ui.temporaryResult, null);
+	ui.onHide();
+	ui.onShow({});
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(ui.isVisible, true);
+	assert.equal(ui.query, "");
+	assert.equal(ui.temporaryResult, null);
+});
+
+test("closing without copying preserves a calculation for continuing later", () => {
+	const { ui } = fixture();
+	ui.setQuery("200 - 10%");
+	ui.onHide();
+	assert.equal(ui.query, "200 - 10%");
+	assert.equal(ui.temporaryResult.value, "180");
+});
+
+test("failed copying keeps the calculation available for retry", async () => {
+	const { ui, root } = fixture();
+	const keys = createKeystrokeStore(root);
+	cleanups.push(() => keys.cleanUp());
+	ui.setQuery("200 - 10%");
+	clipboardError = new Error("Clipboard unavailable");
+	await assert.rejects(
+		keys.keyDown({ keyCode: 36, meta: false, shift: false }),
+		/Clipboard unavailable/,
+	);
+	assert.equal(ui.query, "200 - 10%");
+	assert.equal(ui.temporaryResult.value, "180");
+	assert.deepEqual(copyEvents, []);
+});
+
+test("copying a unit conversion also clears its previous query", async () => {
+	const { ui, root } = fixture();
+	const keys = createKeystrokeStore(root);
+	cleanups.push(() => keys.cleanUp());
+	ui.setQuery("10 km to m");
+	assert.ok(ui.temporaryResult);
+	await keys.keyDown({ keyCode: 36, meta: false, shift: false });
+	assert.equal(copyEvents[0][0], "copy");
+	assert.ok(copyEvents[0][1].includes("10000"));
+	assert.equal(ui.query, "");
+	assert.equal(ui.temporaryResult, null);
 });

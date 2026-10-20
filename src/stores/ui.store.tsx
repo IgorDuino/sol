@@ -1,7 +1,7 @@
 import * as Sentry from "@sentry/react-native";
 import { Assets } from "assets";
-import { Parser } from "expr-eval";
 import { CONSTANTS } from "lib/constants";
+import { evaluateCalculatorQuery } from "lib/calculator";
 import { createItemSearch } from "lib/itemSearch";
 import { solNative } from "lib/SolNative";
 import {
@@ -38,15 +38,12 @@ import {
 	formatExpressionResult,
 	type BookmarkNode,
 	getInitials,
-	normalizeCalculatorQuery,
 	parseFlightIdentifier,
 	parseTimezoneConversion,
 	parseUnitConversion,
 	type TemporaryResult,
 	traverse,
 } from "./ui.store.helpers";
-
-const exprParser = new Parser();
 
 let onShowListener: EmitterSubscription | undefined;
 let onHideListener: EmitterSubscription | undefined;
@@ -707,20 +704,11 @@ export const createUIStore = (root: IRootStore) => {
 						});
 				}
 
-				try {
-					const res = exprParser.evaluate(
-						normalizeCalculatorQuery(store.query),
+				const result = evaluateCalculatorQuery(store.query);
+				if (result !== null) {
+					store.temporaryResult = createTextTemporaryResult(
+						formatExpressionResult(result, store.query),
 					);
-					if (typeof res === "number" && !Number.isNaN(res)) {
-						store.temporaryResult = createTextTemporaryResult(
-							formatExpressionResult(res, store.query),
-							store.query,
-						);
-					} else {
-						store.temporaryResult = null;
-					}
-				} catch (_) {
-					store.temporaryResult = null;
 				}
 
 				if (query === "ip") {
