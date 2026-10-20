@@ -58,6 +58,21 @@ https://discord.gg/W9XmqCQCKP
 - Script Runner
 - Symbolic Link Support
 
+## Launcher search
+
+Search matches any part of an item's name, its localized name, or its alias.
+For example, `hrom`, `chrm`, and `chorme` find Google Chrome; `vsc` and `vscode`
+find Visual Studio Code. Multiple words can appear in any order, and every word
+must match. Search ignores case and accents.
+
+Results prioritize exact names and aliases, then prefixes, word prefixes and
+initials, substrings, compact letter sequences, and finally typos. Usage history
+breaks ties between equally relevant matches. Short queries do not expand typos,
+and longer queries allow at most two edits. No configuration is needed.
+
+The existing MiniSearch index is cached until the item collection changes.
+Run `bun test` for search, store integration, and emoji compatibility checks.
+
 ## Emoji compatibility
 
 Sol keeps its macOS 14.0 minimum and shows only emoji supported by the installed macOS version.

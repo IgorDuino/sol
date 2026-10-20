@@ -2,6 +2,7 @@ import * as Sentry from "@sentry/react-native";
 import { Assets } from "assets";
 import { Parser } from "expr-eval";
 import { CONSTANTS } from "lib/constants";
+import { createItemSearch } from "lib/itemSearch";
 import { solNative } from "lib/SolNative";
 import {
 	defaultShortcuts,
@@ -9,12 +10,10 @@ import {
 	normalizeShortcutMap,
 } from "lib/shortcuts";
 import { googleTranslate } from "lib/translator";
-import MiniSearch from "minisearch";
 import {
 	autorun,
 	type IReactionDisposer,
 	makeAutoObservable,
-	reaction,
 	runInAction,
 	toJS,
 } from "mobx";
@@ -39,7 +38,6 @@ import {
 	formatExpressionResult,
 	type BookmarkNode,
 	getInitials,
-	getSearchMatchTier,
 	normalizeCalculatorQuery,
 	parseFlightIdentifier,
 	parseTimezoneConversion,
@@ -56,7 +54,6 @@ let onFileSearchListener: EmitterSubscription | undefined;
 let onHotkeyListener: EmitterSubscription | undefined;
 let onAppsChangedListener: EmitterSubscription | undefined;
 let appareanceListener: NativeEventSubscription | undefined;
-let bookmarksDisposer: IReactionDisposer | undefined;
 let configDisposer: IReactionDisposer | undefined;
 
 export enum Widget {
@@ -90,38 +87,6 @@ export enum ScratchPadColor {
 	BLUE = "BLUE",
 	ORANGE = "ORANGE",
 }
-
-const minisearch = new MiniSearch({
-	fields: ["name", "localizedName", "alias", "type"],
-	storeFields: [
-		"name",
-		"localizedName",
-		"icon",
-		"iconName",
-		"iconImage",
-		"IconComponent",
-		"color",
-		"url",
-		"preventClose",
-		"type",
-		"alias",
-		"subName",
-		"callback",
-		"metaCallback",
-		"isApplescript",
-		"text",
-		"shortcut",
-		"isFavorite",
-		"isRunning",
-		"bookmarkFolder",
-		"faviconFallback",
-	],
-	tokenize: (text: string) =>
-		text
-			.normalize("NFC")
-			.toLowerCase()
-			.split(/[\s.-]+/),
-});
 
 const userName = solNative.userName();
 const defaultSearchFolders = [
@@ -167,18 +132,16 @@ export const createUIStore = (root: IRootStore) => {
 		return typeof timestamp === "number" ? timestamp : 0;
 	};
 
-	// ponytail: coarse relevance tier so usage history can only reorder items of
-	// comparable match quality. Exact, prefix, word-prefix, substring, and fuzzy
-	// matches remain separate regardless of selection history.
-	const getMatchTier = (item: Pick<Item, "name" | "localizedName">) =>
-		getSearchMatchTier(item, store.query);
-
 	const compareRankedItems = (left: RankedItem, right: RankedItem) => {
 		const tierDiff =
-			(left.matchTier ?? getMatchTier(left)) -
-			(right.matchTier ?? getMatchTier(right));
+			(left.matchTier ?? 0) - (right.matchTier ?? 0);
 		if (tierDiff !== 0) {
 			return tierDiff;
+		}
+
+		const scoreDiff = (right.score ?? 0) - (left.score ?? 0);
+		if (scoreDiff !== 0) {
+			return scoreDiff;
 		}
 
 		const leftCount = getSelectionCount(left);
@@ -188,11 +151,6 @@ export const createUIStore = (root: IRootStore) => {
 
 		if (leftWasSelected !== rightWasSelected) {
 			return leftWasSelected ? -1 : 1;
-		}
-
-		const scoreDiff = (right.score ?? 0) - (left.score ?? 0);
-		if (scoreDiff !== 0) {
-			return scoreDiff;
 		}
 
 		const timestampDiff =
@@ -510,40 +468,24 @@ export const createUIStore = (root: IRootStore) => {
 				store.isLoading = false;
 			});
 		},
-		get items(): Item[] {
-			const allItems = [
+		get allItems(): Item[] {
+			return [
 				...store.apps,
 				...baseItems,
 				...store.customItems,
 				...root.scripts.scripts,
 				...(store.showInAppBrowserBookMarks ? store.bookmarks : []),
 			];
-
-			// If the query is empty, return all items
-			if (!store.query) {
-				return [...allItems].sort(compareRankedItems);
+		},
+		get itemSearch(): ReturnType<typeof createItemSearch<Item>> {
+			return createItemSearch(store.allItems);
+		},
+		get items(): Item[] {
+			if (!store.query.trim()) {
+				return [...store.allItems].sort(compareRankedItems);
 			}
 
-			if (minisearch.documentCount === 0) {
-				minisearch.addAll(allItems);
-			} else {
-				for (const item of allItems) {
-					if (!minisearch.has(item.id)) {
-						minisearch.add(item);
-					}
-				}
-			}
-
-			const results = minisearch.search(store.query, {
-				boost: {
-					name: 2,
-				},
-				prefix: true,
-				fuzzy: true,
-			}) as unknown as RankedItem[];
-			for (const result of results) {
-				result.matchTier = getMatchTier(result);
-			}
+			const results = store.itemSearch.search(store.query);
 
 			results.sort(compareRankedItems);
 
@@ -637,14 +579,10 @@ export const createUIStore = (root: IRootStore) => {
 			const index = store.customItems.findIndex((i) => i.id === updatedItem.id);
 			if (index !== -1) {
 				store.customItems[index] = updatedItem;
-				minisearch.discard(updatedItem.id);
 			}
 		},
 		deleteCustomItem: (itemId: string) => {
 			store.customItems = store.customItems.filter((i) => i.id !== itemId);
-			if (minisearch.has(itemId)) {
-				minisearch.discard(itemId);
-			}
 		},
 		setEditingCustomItem: (item: Item | null) => {
 			store.editingCustomItem = item;
@@ -839,10 +777,6 @@ export const createUIStore = (root: IRootStore) => {
 				};
 			}
 
-			// minisearch is stupid and there is no way to remove a single item via scanning
-			// so we remove all items and add them again
-			minisearch.removeAll();
-
 			runInAction(() => {
 				store.apps = Object.values(appsRecord);
 			});
@@ -915,7 +849,6 @@ export const createUIStore = (root: IRootStore) => {
 			onHotkeyListener?.remove();
 			onAppsChangedListener?.remove();
 			appareanceListener?.remove();
-			bookmarksDisposer?.();
 			configDisposer?.();
 		},
 		getCalendarAccess: () => {
@@ -982,7 +915,6 @@ export const createUIStore = (root: IRootStore) => {
 			const chromiumResults = await Promise.all(
 				sources.map((s) => store.getChromiumBookmarks(s)),
 			);
-
 
 			// Use a Set to keep track of unique ids
 			const seenIds = new Set<string>();
@@ -1309,13 +1241,6 @@ export const createUIStore = (root: IRootStore) => {
 		},
 		reloadJsonConfig,
 	});
-
-	bookmarksDisposer = reaction(
-		() => [store.showInAppBrowserBookMarks],
-		() => {
-			minisearch.removeAll();
-		},
-	);
 
 	hydrate().then(() => {
 		configDisposer = autorun(() => {
