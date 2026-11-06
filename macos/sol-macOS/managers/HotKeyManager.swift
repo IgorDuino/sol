@@ -68,6 +68,13 @@ final class HotKeyManager {
       let shiftPressed = $0.modifierFlags.contains(.shift)
       let controlPressed = $0.modifierFlags.contains(.control)
 
+      // Let a focused text editor keep AppKit's control+j/k/n/p bindings too.
+      if controlPressed && self.controlNavKeys.contains($0.keyCode)
+        && !self.catchVerticalArrowsPress
+      {
+        return $0
+      }
+
       SolEmitter.sharedInstance.keyDown(
         key: $0.characters,
         keyCode: $0.keyCode,

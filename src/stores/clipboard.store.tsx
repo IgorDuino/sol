@@ -2,16 +2,13 @@ import { captureException } from "@sentry/react-native";
 import { solNative } from "lib/SolNative";
 import MiniSearch from "minisearch";
 import { autorun, makeAutoObservable, runInAction } from "mobx";
-import type { EmitterSubscription } from "react-native";
+import { Clipboard, type EmitterSubscription } from "react-native";
 import type { IRootStore } from "store";
 import { readPersistedStore, writePersistedStore } from "./persisted-config";
 import { Widget } from "./ui.store";
 
 const MAX_ITEMS = 1000;
 const MANAGED_PASTEBOARD_IMAGES_PATH = `/Users/${solNative.userName()}/.config/sol/images_pasteboard`;
-
-let onTextCopiedListener: EmitterSubscription | undefined;
-let onFileCopiedListener: EmitterSubscription | undefined;
 
 export type ClipboardStore = ReturnType<typeof createClipboardStore>;
 
@@ -20,6 +17,7 @@ export type PasteItem = {
 	text: string;
 	url?: string | null;
 	bundle?: string | null;
+	source?: "sol";
 	datetime: number; // Unix timestamp when copied
 };
 
@@ -46,13 +44,6 @@ const getMatchTier = (item: Pick<PasteItem, "text">, query: string) => {
 
 	return text.includes(q) ? 2 : 3;
 };
-
-const minisearch = new MiniSearch({
-	fields: ["text"],
-	storeFields: ["id", "text", "url", "bundle", "datetime"],
-	// tokenize: (text: string, fieldName?: string) =>
-	// 	text.toLowerCase().split(/[\s\.-]+/),
-});
 
 function isManagedPasteboardImagePath(path: string | null | undefined) {
 	return !!path && path.startsWith(`${MANAGED_PASTEBOARD_IMAGES_PATH}/`);
@@ -97,18 +88,182 @@ function cleanupOrphanedManagedImageFiles(items: PasteItem[]) {
 }
 
 export const createClipboardStore = (root: IRootStore) => {
+	let onTextCopiedListener: EmitterSubscription | undefined;
+	let onFileCopiedListener: EmitterSubscription | undefined;
+	let stopPersisting: (() => void) | undefined;
+	let disposed = false;
+	const minisearch = new MiniSearch({
+		fields: ["text"],
+		storeFields: ["id", "text", "url", "bundle", "datetime", "source"],
+	});
+	let lastId = 0;
+	const nextId = () => {
+		lastId = Math.max(Date.now(), lastId + 1);
+		while (minisearch.has(lastId)) lastId++;
+		return lastId;
+	};
 	const store = makeAutoObservable({
 		deleteItem: (index: number) => {
 			if (index >= 0 && index < store.items.length) {
+				store.drafts.delete(store.items[index].id);
 				removeManagedImageFile(store.items[index]);
 				minisearch.remove(store.items[index]);
 				store.items.splice(index, 1);
 			}
 		},
 		deleteAllItems: () => {
+			store.endSession();
 			store.items.forEach(removeManagedImageFile);
 			store.items = [];
 			minisearch.removeAll();
+		},
+		// Session-only state. Original items are never edited or used as drafts.
+		selectedId: null as number | null,
+		drafts: new Map<number, string>(),
+		selection: { start: 0, end: 0 },
+		selectionItemId: null as number | null,
+		previewFocused: false,
+		focusTarget: "search" as "search" | "preview",
+		focusRequest: 0,
+		get selectedIndex(): number {
+			const index = store.clipboardItems.findIndex(
+				(item: PasteItem) => item.id === store.selectedId,
+			);
+			return Math.max(0, index);
+		},
+		get currentItem(): PasteItem | undefined {
+			return store.clipboardItems[store.selectedIndex];
+		},
+		get previewText(): string {
+			const item = store.currentItem;
+			return item ? (store.drafts.get(item.id) ?? item.text) : "";
+		},
+		get isEditing(): boolean {
+			return !!store.currentItem && store.drafts.has(store.currentItem.id);
+		},
+		get hasSelection(): boolean {
+			return (
+				store.selectionItemId === store.currentItem?.id &&
+				store.selection.end > store.selection.start
+			);
+		},
+		get actionText(): string | undefined {
+			if (!store.currentItem || store.currentItem.url) return undefined;
+			return store.hasSelection
+				? store.previewText.slice(store.selection.start, store.selection.end)
+				: store.previewText;
+		},
+		selectItem: (id: number | null) => {
+			store.selectedId = id;
+			store.clearSelection();
+		},
+		moveSelection: (delta: number) => {
+			const items = store.clipboardItems;
+			const index = Math.max(
+				0,
+				Math.min(items.length - 1, store.selectedIndex + delta),
+			);
+			store.selectItem(items[index]?.id ?? null);
+		},
+		clearSelection: () => {
+			store.selection = { start: 0, end: 0 };
+			store.selectionItemId = null;
+		},
+		setSelection: (id: number, selection: { start: number; end: number }) => {
+			if (id !== store.currentItem?.id || !store.previewFocused) return;
+			const { start, end } = selection;
+			if (
+				!Number.isInteger(start) ||
+				!Number.isInteger(end) ||
+				start < 0 ||
+				end < start ||
+				end > store.previewText.length
+			)
+				return;
+			store.selection = { start, end };
+			store.selectionItemId = id;
+		},
+		setPreviewFocused: (focused: boolean) => {
+			if (store.previewFocused === focused) return;
+			store.previewFocused = focused;
+			if (focused) {
+				// Pin the displayed item before a copy can prepend a new entry.
+				store.selectedId = store.currentItem?.id ?? null;
+				solNative.turnOffVerticalArrowsListeners();
+				solNative.turnOffEnterListener();
+			} else {
+				solNative.turnOnVerticalArrowsListeners();
+				solNative.turnOnEnterListener();
+			}
+		},
+		focusSearch: () => {
+			store.setPreviewFocused(false);
+			store.clearSelection();
+			store.focusTarget = "search";
+			store.focusRequest++;
+		},
+		focusPreview: () => {
+			if (!store.currentItem || store.currentItem.url) return;
+			store.focusTarget = "preview";
+			store.focusRequest++;
+		},
+		beginEditing: () => {
+			const item = store.currentItem;
+			if (!item || item.url) return;
+			store.selectedId = item.id;
+			if (!store.drafts.has(item.id)) store.drafts.set(item.id, item.text);
+			store.focusPreview();
+		},
+		updateDraft: (id: number, text: string) => {
+			if (id !== store.currentItem?.id || !store.drafts.has(id)) return;
+			store.drafts.set(id, text);
+			if (store.selection.end > text.length) store.clearSelection();
+		},
+		resetDraft: () => {
+			if (store.currentItem) store.drafts.delete(store.currentItem.id);
+			store.clearSelection();
+			store.focusPreview();
+		},
+		copyText: (text?: string): void => {
+			text ??= store.actionText;
+			if (!text?.length) return;
+			const selectedId = store.currentItem?.id ?? null;
+			Clipboard.setString(text);
+			store.selectedId = selectedId;
+			store.onTextCopied({ text, bundle: null, source: "sol" });
+			solNative.showToast("Copied to clipboard", "success");
+		},
+		pasteCurrent: (text?: string): void => {
+			text ??= store.actionText;
+			const item = store.currentItem;
+			if (!item) return;
+			if (item.url) {
+				const index = store.items.findIndex(
+					(entry: PasteItem) => entry.id === item.id,
+				);
+				if (index > 0) store.popToTop(index);
+				if (/\.(png|jpe?g|tiff?)$/i.test(item.url))
+					solNative.pasteImageToFrontmostApp(item.url);
+				else solNative.pasteToFrontmostApp(item.text);
+				return;
+			}
+			if (!text?.length) return;
+			Clipboard.setString(text);
+			store.onTextCopied({ text, bundle: null, source: "sol" });
+			solNative.pasteToFrontmostApp(text);
+		},
+		deleteCurrent: () => {
+			const index = store.items.findIndex(
+				(item: PasteItem) => item.id === store.currentItem?.id,
+			);
+			store.deleteItem(index);
+			store.selectItem(null);
+		},
+		endSession: () => {
+			store.setPreviewFocused(false);
+			store.drafts.clear();
+			store.selectItem(null);
+			store.focusTarget = "search";
 		},
 		items: [] as PasteItem[],
 		saveHistory: false,
@@ -118,7 +273,7 @@ export const createClipboardStore = (root: IRootStore) => {
 			bundle: string | null;
 		}) => {
 			const newItem: PasteItem = {
-				id: +Date.now(),
+				id: nextId(),
 				datetime: Date.now(),
 				...obj,
 			};
@@ -146,18 +301,24 @@ export const createClipboardStore = (root: IRootStore) => {
 			// Remove last item from minisearch
 			store.removeLastItemIfNeeded();
 		},
-		onTextCopied: (obj: { text: string; bundle: string | null }) => {
+		onTextCopied: (obj: {
+			text: string;
+			bundle: string | null;
+			source?: "sol";
+		}) => {
 			if (!obj.text) {
 				return;
 			}
 
 			const newItem: PasteItem = {
-				id: Date.now().valueOf(),
+				id: nextId(),
 				datetime: Date.now(),
 				...obj,
 			};
 
-			const index = store.items.findIndex((t) => t.text === newItem.text);
+			const index = store.items.findIndex(
+				(t: PasteItem) => t.text === newItem.text,
+			);
 			// Item already exists, move to top
 			if (index !== -1) {
 				// Re-add to minisearch to update the order
@@ -179,7 +340,8 @@ export const createClipboardStore = (root: IRootStore) => {
 			const items = store.items;
 
 			if (!root.ui.query || root.ui.focusedWidget !== Widget.CLIPBOARD) {
-				return items;
+				// LegendList needs a new data reference when history changes.
+				return items.slice();
 			}
 
 			// Boost recent items in search results
@@ -216,6 +378,7 @@ export const createClipboardStore = (root: IRootStore) => {
 		removeLastItemIfNeeded: () => {
 			if (store.items.length > MAX_ITEMS) {
 				const removedItem = store.items[store.items.length - 1];
+				store.drafts.delete(removedItem.id);
 				removeManagedImageFile(removedItem);
 
 				try {
@@ -240,6 +403,9 @@ export const createClipboardStore = (root: IRootStore) => {
 			}
 		},
 		cleanUp: () => {
+			disposed = true;
+			stopPersisting?.();
+			store.endSession();
 			onTextCopiedListener?.remove();
 			onTextCopiedListener = undefined;
 			onFileCopiedListener?.remove();
@@ -297,7 +463,7 @@ export const createClipboardStore = (root: IRootStore) => {
 	const persist = async () => {
 		if (store.saveHistory) {
 			// Ensure all items have datetime before persisting
-			const itemsToPersist = store.items.map((item) => ({
+			const itemsToPersist = store.items.map((item: PasteItem) => ({
 				...item,
 				datetime:
 					typeof item.datetime === "number" && !Number.isNaN(item.datetime)
@@ -314,12 +480,9 @@ export const createClipboardStore = (root: IRootStore) => {
 			}
 		}
 
-		const storeWithoutItems = { ...store };
-		storeWithoutItems.items = [];
-
 		try {
 			writePersistedStore("clipboard", {
-				saveHistory: storeWithoutItems.saveHistory,
+				saveHistory: store.saveHistory,
 			});
 		} catch {
 			console.warn("Could not persist clipboard store config");
@@ -327,7 +490,7 @@ export const createClipboardStore = (root: IRootStore) => {
 	};
 
 	hydrate().then(() => {
-		autorun(persist);
+		if (!disposed) stopPersisting = autorun(persist);
 	});
 
 	return store;

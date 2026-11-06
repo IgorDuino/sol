@@ -71,7 +71,7 @@ breaks ties between equally relevant matches. Short queries do not expand typos,
 and longer queries allow at most two edits. No configuration is needed.
 
 The existing MiniSearch index is cached until the item collection changes.
-Run `bun test` for calculator, search, store integration, and emoji compatibility checks.
+Run `bun test ./src` for calculator, search, clipboard, store integration, and emoji compatibility checks.
 
 ## Calculator
 
@@ -90,6 +90,20 @@ functions such as `sqrt`, `min`, and `max`. Commas separate arguments in
 multi-argument functions (`max(2,3)`); use decimal points in those arguments.
 Incomplete expressions and non-finite results such as division by zero show no
 calculator result.
+
+## Clipboard preview
+
+Click a history item to preview it; double-click or press Enter from search to paste.
+Text previews support native selection and ⌘C. Copy and Paste use the selection,
+or the whole text when nothing is selected. Copy keeps the window open.
+
+Choose **Edit Copy** (⌘E) to make temporary changes. **Reset** restores the original.
+Drafts survive switching items while the clipboard screen is open and disappear
+when it closes. Original history entries stay unchanged; copying or pasting a
+modified fragment records it as a separate entry, subject to normal deduplication.
+
+Inside the preview, Enter inserts a newline while editing, ⌘Enter pastes, and
+Escape returns to search. Tab switches between search and the preview.
 
 ## Emoji compatibility
 
