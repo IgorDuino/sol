@@ -29,6 +29,16 @@ Join the Discord
 
 https://discord.gg/W9XmqCQCKP
 
+## Local development
+
+Install dependencies with `bun install`, then copy `src/env.example.ts` to
+`src/env.ts`. The default empty DSN disables Sentry reporting; `src/env.ts` is
+ignored by Git.
+
+Run `bun run typecheck` and `bun test ./src` to check the source. Native macOS
+builds also require Xcode and CocoaPods dependencies (`bundle install`, then
+`cd macos && bundle exec pod install`).
+
 ## Features
 
 - App search

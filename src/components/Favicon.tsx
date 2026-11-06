@@ -1,4 +1,5 @@
 import {useState} from 'react'
+import {URL} from 'react-native-url-polyfill'
 import {Image, View} from 'react-native'
 
 const Favicon = ({
