@@ -658,14 +658,26 @@ export const createUIStore = (root: IRootStore) => {
 			store.showWindowOn = on;
 		},
 		focusWidget: (widget: Widget) => {
+			if (
+				store.focusedWidget === Widget.CLIPBOARD &&
+				widget !== Widget.CLIPBOARD
+			)
+				root.clipboard?.endSession();
 			store.selectedIndex = 0;
 			store.focusedWidget = widget;
 		},
 		setFocus: (widget: Widget) => {
+			if (
+				store.focusedWidget === Widget.CLIPBOARD &&
+				widget !== Widget.CLIPBOARD
+			)
+				root.clipboard?.endSession();
 			store.focusedWidget = widget;
 		},
 		setQuery: (query: string) => {
 			store.query = query.replace("\n", " ");
+			if (store.focusedWidget === Widget.CLIPBOARD)
+				root.clipboard?.selectItem(null);
 			store.selectedIndex = 0;
 			store.temporaryResult = null;
 
@@ -825,6 +837,7 @@ export const createUIStore = (root: IRootStore) => {
 			});
 		},
 		onHide: () => {
+			root.clipboard?.endSession();
 			store.isVisible = false;
 			store.focusedWidget = Widget.SEARCH;
 			store.editingCustomItem = null;

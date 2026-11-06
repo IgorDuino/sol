@@ -11,20 +11,6 @@ import { formatTemporaryResultForClipboard } from "./ui.store.helpers";
 let keyDownListener: EmitterSubscription | undefined;
 let keyUpListener: EmitterSubscription | undefined;
 
-function isImageClipboardPath(path: string | null | undefined) {
-	if (!path) {
-		return false;
-	}
-	const lower = path.toLowerCase();
-	return (
-		lower.endsWith(".png") ||
-		lower.endsWith(".jpg") ||
-		lower.endsWith(".jpeg") ||
-		lower.endsWith(".tif") ||
-		lower.endsWith(".tiff")
-	);
-}
-
 export type KeystrokeStore = ReturnType<typeof createKeystrokeStore>;
 
 export const createKeystrokeStore = (root: IRootStore) => {
@@ -45,6 +31,17 @@ export const createKeystrokeStore = (root: IRootStore) => {
 			meta: boolean;
 			shift: boolean;
 		}) => {
+			if (root.ui.focusedWidget === Widget.CLIPBOARD) {
+				if (meta && keyCode === 14) {
+					root.clipboard.beginEditing();
+					return;
+				}
+				if (root.clipboard.previewFocused) {
+					if (keyCode === 53 || keyCode === 48) root.clipboard.focusSearch();
+					// Native text editing owns navigation, deletion and Enter here.
+					if (![55, 59, 60].includes(keyCode)) return;
+				}
+			}
 			switch (keyCode) {
 				// "j" / "n" keys - simulate a down key press
 				case 38:
@@ -76,7 +73,7 @@ export const createKeystrokeStore = (root: IRootStore) => {
 
 					if (root.ui.focusedWidget === Widget.CLIPBOARD) {
 						if (shift) {
-							root.clipboard.deleteItem(root.ui.selectedIndex);
+							root.clipboard.deleteCurrent();
 						}
 						return;
 					}
@@ -98,6 +95,9 @@ export const createKeystrokeStore = (root: IRootStore) => {
 				// tab key
 				case 48: {
 					switch (root.ui.focusedWidget) {
+						case Widget.CLIPBOARD:
+							root.clipboard.focusPreview();
+							break;
 						//   case Widget.SEARCH:
 						//     if (!!root.calendar.filteredEvents.length) {
 						//       root.ui.selectedIndex = 0
@@ -157,36 +157,14 @@ export const createKeystrokeStore = (root: IRootStore) => {
 							break;
 						}
 						case Widget.CLIPBOARD: {
-							if (root.clipboard.clipboardItems.length === 0) {
-								return;
+							const entry = root.clipboard.currentItem;
+							if (!entry) return;
+							if (meta) {
+								Linking.openURL(entry.text);
+								solNative.hideWindow();
+							} else {
+								root.clipboard.pasteCurrent();
 							}
-
-							const entry =
-								root.clipboard.clipboardItems[root.ui.selectedIndex];
-
-							const originalIndex = root.clipboard.clipboardItems.findIndex(
-								(e) => entry === e,
-							);
-
-							root.clipboard.popToTop(originalIndex);
-
-							if (entry) {
-								if (meta) {
-									try {
-										Linking.openURL(entry.text);
-									} catch (e) {
-										// console.log('could not open in browser')
-									}
-									solNative.hideWindow();
-								} else {
-									if (isImageClipboardPath(entry.url)) {
-										solNative.pasteImageToFrontmostApp(entry.url as string);
-									} else {
-										solNative.pasteToFrontmostApp(entry.text);
-									}
-								}
-							}
-
 							break;
 						}
 
@@ -667,6 +645,9 @@ export const createKeystrokeStore = (root: IRootStore) => {
 				// up key
 				case 126: {
 					switch (root.ui.focusedWidget) {
+						case Widget.CLIPBOARD:
+							root.clipboard.moveSelection(-1);
+							break;
 						case Widget.SCRATCHPAD:
 							break;
 
@@ -717,10 +698,7 @@ export const createKeystrokeStore = (root: IRootStore) => {
 				case 125: {
 					switch (root.ui.focusedWidget) {
 						case Widget.CLIPBOARD: {
-							root.ui.selectedIndex = Math.min(
-								root.ui.selectedIndex + 1,
-								root.clipboard.items.length - 1,
-							);
+							root.clipboard.moveSelection(1);
 							break;
 						}
 
