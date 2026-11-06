@@ -58,6 +58,39 @@ https://discord.gg/W9XmqCQCKP
 - Script Runner
 - Symbolic Link Support
 
+## Launcher search
+
+Search matches any part of an item's name, its localized name, or its alias.
+For example, `hrom`, `chrm`, and `chorme` find Google Chrome; `vsc` and `vscode`
+find Visual Studio Code. Multiple words can appear in any order, and every word
+must match. Search ignores case and accents.
+
+Results prioritize exact names and aliases, then prefixes, word prefixes and
+initials, substrings, compact letter sequences, and finally typos. Usage history
+breaks ties between equally relevant matches. Short queries do not expand typos,
+and longer queries allow at most two edits. No configuration is needed.
+
+The existing MiniSearch index is cached until the item collection changes.
+Run `bun test` for calculator, search, store integration, and emoji compatibility checks.
+
+## Calculator
+
+Type an expression into the launcher, then press Enter to copy its numeric result.
+After copying, the search input is cleared for the next launch. Closing without
+copying keeps a calculation available to continue.
+
+Percentages work as discounts or increases with `+` and `-`: `(3.5 * 10 * 3000) - 6%`
+returns `98700`, and `200 + 10%` returns `220`. With multiplication and division,
+percentages are fractions: `200 * 10%` returns `20`. Normal operator precedence
+applies; use parentheses to group percentage changes.
+
+The calculator also supports decimal commas, spaced thousands, `× ÷ −`, powers
+(`^`, `**`, `²`, `³`), implicit multiplication (`2(3+4)`, `2pi`), and existing math
+functions such as `sqrt`, `min`, and `max`. Commas separate arguments in
+multi-argument functions (`max(2,3)`); use decimal points in those arguments.
+Incomplete expressions and non-finite results such as division by zero show no
+calculator result.
+
 ## Emoji compatibility
 
 Sol keeps its macOS 14.0 minimum and shows only emoji supported by the installed macOS version.

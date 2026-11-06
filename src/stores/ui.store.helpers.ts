@@ -32,8 +32,6 @@ export type BookmarkNode = {
 	children?: BookmarkNode[];
 };
 
-const EXPRESSION_RESULT_DECIMALS = 12;
-
 const TIMEZONE_ABBREVIATION_OFFSETS: Record<string, number> = {
 	UTC: 0,
 	GMT: 0,
@@ -190,49 +188,6 @@ export function getInitials(name: string) {
 		.split(" ")
 		.map((s) => s.charAt(0))
 		.join("");
-}
-
-function normalizeSearchText(value: string) {
-	return value
-		.normalize("NFC")
-		.toLowerCase()
-		.replace(/[\s.-]+/g, " ");
-}
-
-function getTextMatchTier(value: string | undefined, query: string) {
-	if (!value) {
-		return 4;
-	}
-
-	const normalizedValue = normalizeSearchText(value);
-	if (normalizedValue === query) {
-		return 0;
-	}
-
-	if (normalizedValue.startsWith(query)) {
-		return 1;
-	}
-
-	if (normalizedValue.split(/\s+/).some((word) => word.startsWith(query))) {
-		return 2;
-	}
-
-	return normalizedValue.includes(query) ? 3 : 4;
-}
-
-export function getSearchMatchTier(
-	item: Pick<Item, "name" | "localizedName">,
-	rawQuery: string,
-) {
-	const query = normalizeSearchText(rawQuery).trim();
-	if (!query) {
-		return 0;
-	}
-
-	return Math.min(
-		getTextMatchTier(item.name, query),
-		getTextMatchTier(item.localizedName, query),
-	);
 }
 
 export function traverse(
@@ -530,28 +485,4 @@ export function formatTemporaryResultForClipboard(result: TemporaryResult) {
 	return details ? `${result.flight} | ${details}` : result.flight;
 }
 
-export function normalizeCalculatorQuery(query: string): string {
-	return query
-		.replace(
-			/(\d{1,3}(?:\.\d{3})+),(\d+)/g,
-			(_, whole: string, fraction: string) =>
-				`${whole.replace(/\./g, "")}.${fraction}`,
-		)
-		.replace(/(\d),(\d)/g, "$1.$2");
-}
-
-export function formatExpressionResult(value: number, query = "") {
-	if (!Number.isFinite(value)) {
-		return value.toString();
-	}
-
-	const scale = 10 ** EXPRESSION_RESULT_DECIMALS;
-	const rounded = Math.round((value + Number.EPSILON) * scale) / scale;
-	const text = rounded.toString();
-
-	if (/\d,\d/.test(query)) {
-		return text.replace(".", ",");
-	}
-
-	return text;
-}
+export { normalizeCalculatorQuery, formatExpressionResult } from "lib/calculator";

@@ -411,6 +411,7 @@ export const createKeystrokeStore = (root: IRootStore) => {
 								Clipboard.setString(
 									formatTemporaryResultForClipboard(root.ui.temporaryResult),
 								);
+								root.ui.setQuery("");
 								solNative.showToast("Copied to clipboard", "success");
 								solNative.hideWindow();
 								return;
